@@ -36,10 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = openai.OpenAI(
-    base_url=os.getenv("OPENAI_BASE_URL", "https://omniroute.online/v1"),
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+
 
 def get_db():
     db = SessionLocal()
@@ -61,7 +58,16 @@ async def diagnose_pro(
     """
     محرك التشخيص الاحترافي المتكامل للسيارات (محرك + علبة السرعة) مع دعم Vision AI OCR وقاعدة البيانات.
     """
+
+    # حطو هنا لداخل باش يتخدم غير فاش شي واحد يطلب التشخيص
+    client = openai.OpenAI(
+        base_url=os.getenv("OPENAI_BASE_URL", "https://omniroute.online/v1"),
+        api_key=os.getenv("OPENAI_API_KEY")
+    )
+
+    # ... (هنا غادي تلقى دوك التعليقات ديالك)
     try:
+  
         image_content = []
         filename = None
         
@@ -73,7 +79,7 @@ async def diagnose_pro(
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{file.content_type};base64,{base64_image}"
+                        "url": f"data:image/jpeg;base64,{base64_image}"
                     }
                 }
             ]
