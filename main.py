@@ -112,7 +112,7 @@ async def diagnose_pro(
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
         response = client.chat.completions.create(
-           model="google/gemini-2.0-flash-lite-001:free",
+          model="meta-llama/llama-3.3-70b-instruct:free",
             messages=[
                 {
                     "role": "system",
