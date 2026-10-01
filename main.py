@@ -112,7 +112,7 @@ async def diagnose_pro(
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
         response = client.chat.completions.create(
-          model="meta-llama/llama-3.3-70b-instruct:free",
+        model="gpt-4o"
             messages=[
                 {
                     "role": "system",
