@@ -60,9 +60,10 @@ async def diagnose_pro(
     """
 
     # حطو هنا لداخل باش يتخدم غير فاش شي واحد يطلب التشخيص
-    client = openai.OpenAI(
-        base_url=os.getenv("OPENAI_BASE_URL", "https://omniroute.online/v1"),
-        api_key=os.getenv("OPENAI_API_KEY")
+   client = openai.OpenAI(
+    base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+    api_key=os.getenv("OPENAI_API_KEY") 
+)
     )
 
     # ... (هنا غادي تلقى دوك التعليقات ديالك)
@@ -111,20 +112,28 @@ async def diagnose_pro(
 
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
-        response = client.chat.completions.create(
-       model="google/gemini-2.0-flash-lite-001:free",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة مبني على آلاف البيانات العالمية للسيارات."
-                },
-                {
-                    "role": "user",
-                    "content": messages_content
-                }
-            ],
-            max_tokens=1200
-        )
+     response = client.chat.completions.create(
+    model="google/gemini-2.0-flash-lite-001:free", 
+    messages=[
+        {
+            "role": "system",
+            "content": "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة مبني على آلاف البيانات العالمية للسيارات"
+        },
+        {
+            "role": "user",
+            "content": messages_content
+        }
+    ],
+    max_tokens=1200,
+    extra_body={
+        "models": [
+            "google/gemini-2.0-flash-lite-001:free",
+            "qwen/qwen-2.5-72b-instruct:free",
+            "meta-llama/llama-3.1-8b-instruct:free"
+        ],
+        "route": "fallback"
+    }
+)
 
         analysis_result = response.choices[0].message.content
 
