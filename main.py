@@ -110,9 +110,9 @@ async def diagnose_pro(
 
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
-        # حيدنا الـ fallback نهائيا باش ميبقاش يقلب على الموديلات اللي رجعو بالفلوس
+        # حطينا السمية الجديدة المعتمدة فـ OpenRouter اللي كتدعم قراءة الصور
         response = client.chat.completions.create(
-            model="google/gemini-2.0-flash-lite-001:free",
+            model="google/gemini-2.0-flash-exp:free",
             messages=[
                 {
                     "role": "system",
@@ -123,7 +123,7 @@ async def diagnose_pro(
                     "content": messages_content
                 }
             ],
-            max_tokens=1200
+            max_tokens=1500
         )
 
         analysis_result = response.choices[0].message.content
