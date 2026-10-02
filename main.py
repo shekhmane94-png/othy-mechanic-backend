@@ -1,18 +1,23 @@
 import os
+import base64
+import datetime
+import openai
 from fastapi import FastAPI, Depends, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-import openai
-import datetime
-import base64
 
+# 1. إعداد قاعدة البيانات
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./othy_mechanic.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# 2. نموذج قاعدة البيانات
 class DiagnosticRecord(Base):
     __tablename__ = "diagnostic_records"
     id = Column(Integer, primary_key=True, index=True)
@@ -26,6 +31,7 @@ class DiagnosticRecord(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# 3. إعداد تطبيق FastAPI و CORS
 app = FastAPI(title="Othy Mechanic Pro Engine & Gearbox AI", version="3.0")
 
 app.add_middleware(
@@ -36,8 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
+# 4. الحصول على جلسة قاعدة البيانات
 def get_db():
     db = SessionLocal()
     try:
@@ -45,32 +50,26 @@ def get_db():
     finally:
         db.close()
 
+# 5. مسار التشخيص الاحترافي
 @app.post("/api/v1/diagnose-pro")
 async def diagnose_pro(
-    section_type: str = Form(...), # "engine" أو "gearbox"
+    section_type: str = Form(...),
     car_brand: str = Form(None),
     gearbox_type: str = Form(None),
     issue_description: str = Form(None),
-    language: str = Form("ar"), # ar, fr, en
+    language: str = Form("ar"),
     file: UploadFile = File(None),
     db: Session = Depends(get_db)
 ):
-    """
-    محرك التشخيص الاحترافي المتكامل للسيارات (محرك + علبة السرعة) مع دعم Vision AI OCR وقاعدة البيانات.
-    """
-
-    # حطو هنا لداخل باش يتخدم غير فاش شي واحد يطلب التشخيص
     client = openai.OpenAI(
         base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
         api_key=os.getenv("OPENAI_API_KEY")
     )
 
-    # ... (هنا غادي تلقى دوك التعليقات ديالك)
     try:
-  
         image_content = []
         filename = None
-        
+
         if file and file.filename:
             filename = file.filename
             file_bytes = await file.read()
@@ -84,7 +83,6 @@ async def diagnose_pro(
                 }
             ]
 
-        # بناء التوجيه الاحترافي للذكاء الاصطناعي بناءً على القسم والحقول المدخلة
         lang_prompt = {
             "ar": "أجب باللغة العربية بتقرير هندسي ميكانيكي محترف ودقيق.",
             "fr": "Répondez en français avec un rapport de diagnostic mécanique professionnel et précis.",
@@ -95,47 +93,48 @@ async def diagnose_pro(
         gearbox_str = gearbox_type if gearbox_type else "غير متاح"
         issue_str = issue_description if issue_description else "غير متوفر"
 
+        section_title = "تشخيص المحرك والأعطال القادمة" if section_type == "engine" else "علبة السرعة (Gearbox)"
+
         prompt_text = f"""
-        أنت خبير مهندس ميكانيك سيارات محترف عالمياً ومختص في نظام تشخيص OBD-II وأعطال السيارات المتقدمة.
-        القسم المستهدف: {'تشخيص المحرك والأعطال العامة' if section_type == 'engine' else 'تشخيص علبة السرعة (Gearbox)'}
-        نوع السيارة: {brand_str}
-        نوع علبة السرعة: {gearbox_str}
-        وصف المشكل من الميكانيكي/الزبون: {issue_str}
-        
-        قم بتحليل البيانات والصورة المرفقة (إن وجدت) بدقة تامة، وعطني:
-        1. التحليل التقني الدقيق للمشكلة.
-        2. الأسباب المحتملة مرتبة حسب الأولوية.
-        3. الحل العملي المباشر والإصلاح الهندسي المطلوب.
-        {lang_prompt}
+أنت خبير مهندس ميكانيك سيارات عالمي ومختص في نظام تشخيص وأعطال السيارات المتقدمة OBD-II وقسم المكونات ({section_title}).
+نوع السيارة: {brand_str}
+نوع علبة السرعة: {gearbox_str}
+وصف المشكلة من الميكانيكي/الزبون: {issue_str}
+
+قم بتحليل البيانات والصورة المرفقة (إن وجدت) بدقة تامة واعطني:
+1. التحليل التقني الدقيق للمشكلة.
+2. الأسباب المحتملة مرتبة حسب الأولوية.
+3. الحل العملي المباشر والإصلاح الهندسي المطلوب.
+{lang_prompt}
         """
+
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
-    response = client.chat.completions.create(
-        model="google/gemini-2.0-flash-lite-001:free",
-        messages=[
-            {
-                "role": "system",
-                "content": "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة مبني على آلاف البيانات العالمية للسيارات"
-            },
-            {
-                "role": "user",
-                "content": messages_content
-            }
-        ],
-        max_tokens=1200,
-        extra_body={
-            "models": [
-                "google/gemini-2.0-flash-lite-001:free",
-                "qwen/qwen-2.5-72b-instruct:free",
-                "meta-llama/llama-3.1-8b-instruct:free"
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-lite-001:free",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة مبني على آلاف البيانات العالمية للسيارات"
+                },
+                {
+                    "role": "user",
+                    "content": messages_content
+                }
             ],
-            "route": "fallback"
-        }
-    )
+            max_tokens=1200,
+            extra_body={
+                "models": [
+                    "google/gemini-2.0-flash-lite-001:free",
+                    "qwen/qwen-2.5-72b-instruct:free",
+                    "meta-llama/llama-3.1-8b-instruct:free"
+                ],
+                "route": "fallback"
+            }
+        )
 
-    analysis_result = response.choices[0].message.content
-        
-        # حفظ العملية في قاعدة البيانات الحقيقية
+        analysis_result = response.choices[0].message.content
+
         db_record = DiagnosticRecord(
             section_type=section_type,
             car_brand=car_brand,
