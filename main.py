@@ -126,7 +126,6 @@ async def diagnose_pro(
             extra_body={
                 "models": [
                     "google/gemini-2.0-flash-lite-001:free",
-                    "qwen/qwen-2.5-72b-instruct:free",
                     "meta-llama/llama-3.1-8b-instruct:free"
                 ],
                 "route": "fallback"
