@@ -110,6 +110,7 @@ async def diagnose_pro(
 
         messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
+        # حيدنا الـ fallback نهائيا باش ميبقاش يقلب على الموديلات اللي رجعو بالفلوس
         response = client.chat.completions.create(
             model="google/gemini-2.0-flash-lite-001:free",
             messages=[
@@ -122,14 +123,7 @@ async def diagnose_pro(
                     "content": messages_content
                 }
             ],
-            max_tokens=1200,
-            extra_body={
-                "models": [
-                    "google/gemini-2.0-flash-lite-001:free",
-                    "meta-llama/llama-3.1-8b-instruct:free"
-                ],
-                "route": "fallback"
-            }
+            max_tokens=1200
         )
 
         analysis_result = response.choices[0].message.content
