@@ -60,10 +60,9 @@ async def diagnose_pro(
     """
 
     # حطو هنا لداخل باش يتخدم غير فاش شي واحد يطلب التشخيص
-   client = openai.OpenAI(
-    base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.getenv("OPENAI_API_KEY") 
-)
+    client = openai.OpenAI(
+        base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+        api_key=os.getenv("OPENAI_API_KEY")
     )
 
     # ... (هنا غادي تلقى دوك التعليقات ديالك)
