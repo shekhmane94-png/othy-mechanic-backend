@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import base64
 import logging
@@ -53,14 +54,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# موديلات احتياطية (مجانية عبر OpenRouter، كيدعموا الصور)، كيجرب بالتتالي إلا طاح الأول
-# ملاحظة: الموديلات ":free" ديال OpenRouter كيتبدلو من وقت لوقت. إلا طاحو هادو
-# بزاف فالمستقبل، دخل لـ https://openrouter.ai/models?max_price=0 وشوف
-# الموديلات اللي فيهم "Image" فالـ modalities، وبدل هاد اللائحة.
-FALLBACK_MODELS = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
+# "openrouter/free" هو موديل خاص كيختار هو بنفسه أحسن موديل مجاني متوفر فالوقت
+# الحالي (OpenRouter هو لي كيدبر التبديل، ماشي حنا) - هادشي كيحل مشكل الموديلات
+# المجانية اللي كيتبدلو/كيتحيدو بلا سابق إنذار. نحطوه فأول اللائحة.
+# بلاصة احتياطية (إلا ماخدمش "openrouter/free" لسبب ما): موديلات محددة بالاسم.
+# ملاحظة: هاد الموديلات المحددة كيتبدلو من وقت لوقت - دخل لـ
+# https://openrouter.ai/models?max_price=0 إلا طاحو كاملين فالمستقبل.
+TEXT_FALLBACK_MODELS = [
+    "openrouter/free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+]
+VISION_FALLBACK_MODELS = [
     "google/gemma-4-31b-it:free",
     "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 ]
 
@@ -105,29 +113,64 @@ def build_prompt(section_title: str, brand_str: str, gearbox_str: str, issue_str
 {LANG_PROMPT.get(lang, LANG_PROMPT["ar"])}
 """
 
-def call_model_with_fallback(client: "openai.OpenAI", messages_content: list) -> tuple[str, str]:
+def call_model_with_fallback(client: "openai.OpenAI", messages_content: list, has_image: bool) -> tuple[str, str]:
     """يجرب الموديلات واحد بواحد، كيرجع (نتيجة، اسم_الموديل)."""
+    model_list = VISION_FALLBACK_MODELS if has_image else TEXT_FALLBACK_MODELS
     last_error = None
-    for model_name in FALLBACK_MODELS:
+    for model_name in model_list:
         try:
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {
                         "role": "system",
-                        "content": "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة. جاوب بـJSON فقط دايما.",
+                        "content": (
+                            "أنت نظام تشخيص ميكانيكي صناعي عالي الدقة. جاوب بـJSON فقط "
+                            "دايما، بلا أي نص قبل أو بعد، وبلا Markdown fences."
+                        ),
                     },
                     {"role": "user", "content": messages_content},
                 ],
                 max_tokens=1200,
-                response_format={"type": "json_object"},
+                # ملاحظة: ما كنستعملوش response_format={"type": "json_object"}
+                # حيت بعض الموديلات المجانية ما كتدعمهاش مزيان وكترجع جواب فاسد.
+                # كنعتمدو على التعليمة فال system prompt، ونقرأو الـJSON بمرونة تحت.
             )
-            return response.choices[0].message.content, model_name
+            if not response or not response.choices:
+                raise ValueError(f"جواب فارغ ولا ناقص من {model_name}")
+            content = response.choices[0].message.content
+            if not content or not content.strip():
+                raise ValueError(f"محتوى فارغ من {model_name}")
+            return content, model_name
         except Exception as e:
             logger.warning("Model %s failed: %s", model_name, e)
             last_error = e
             continue
     raise last_error if last_error else RuntimeError("كل الموديلات طاحو")
+
+
+def extract_json(raw_text: str) -> dict:
+    """يحاول يقرا JSON من جواب الموديل، حتى لو كان محاط بنص زائد أو Markdown fences."""
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+    # جرب نلقاو أول { ... } بلوك فالنص (حالة كاين نص زائد ولا ```json فences)
+    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    # فشلنا، نرجعو النص الخام كعنوان بلا تنظيم
+    return {
+        "title": raw_text.strip()[:300],
+        "severity": "medium",
+        "urgent": False,
+        "urgent_note": "",
+        "causes": [],
+        "advice": [],
+    }
 
 @app.post("/api/v1/diagnose-pro")
 async def diagnose_pro(
@@ -168,13 +211,10 @@ async def diagnose_pro(
     messages_content = [{"type": "text", "text": prompt_text}] + image_content
 
     try:
-        raw_result, used_model = call_model_with_fallback(client, messages_content)
-        try:
-            parsed = json.loads(raw_result)
-        except json.JSONDecodeError:
-            # الموديل ماجاوبش بـJSON صحيح، نرجعو نص خام فحقل title
-            parsed = {"title": raw_result, "severity": "medium", "urgent": False,
-                      "urgent_note": "", "causes": [], "advice": []}
+        raw_result, used_model = call_model_with_fallback(
+            client, messages_content, has_image=bool(image_content)
+        )
+        parsed = extract_json(raw_result)
 
         db_record = DiagnosticRecord(
             section_type=section_type,
