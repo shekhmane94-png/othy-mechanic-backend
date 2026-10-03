@@ -53,11 +53,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# موديلات احتياطية (مجانية عبر OpenRouter)، كيجرب بالتتالي إلا طاح الأول
+# موديلات احتياطية (مجانية عبر OpenRouter، كيدعموا الصور)، كيجرب بالتتالي إلا طاح الأول
+# ملاحظة: الموديلات ":free" ديال OpenRouter كيتبدلو من وقت لوقت. إلا طاحو هادو
+# بزاف فالمستقبل، دخل لـ https://openrouter.ai/models?max_price=0 وشوف
+# الموديلات اللي فيهم "Image" فالـ modalities، وبدل هاد اللائحة.
 FALLBACK_MODELS = [
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.2-11b-vision-instruct:free",
-    "qwen/qwen2.5-vl-72b-instruct:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 ]
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 8MB
