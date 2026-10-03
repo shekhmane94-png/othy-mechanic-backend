@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import base64
 import logging
 import datetime
@@ -113,9 +114,8 @@ def build_prompt(section_title: str, brand_str: str, gearbox_str: str, issue_str
 {LANG_PROMPT.get(lang, LANG_PROMPT["ar"])}
 """
 
-def call_model_with_fallback(client: "openai.OpenAI", messages_content: list, has_image: bool) -> tuple[str, str]:
-    """يجرب الموديلات واحد بواحد، كيرجع (نتيجة، اسم_الموديل)."""
-    model_list = VISION_FALLBACK_MODELS if has_image else TEXT_FALLBACK_MODELS
+def _try_models_once(client: "openai.OpenAI", messages_content: list, model_list: list) -> tuple[str, str, Exception]:
+    """يجرب لائحة الموديلات مرة وحدة، كيرجع (نتيجة, اسم_الموديل, None) ولا (None, None, آخر_خطأ)."""
     last_error = None
     for model_name in model_list:
         try:
@@ -141,12 +141,27 @@ def call_model_with_fallback(client: "openai.OpenAI", messages_content: list, ha
             content = response.choices[0].message.content
             if not content or not content.strip():
                 raise ValueError(f"محتوى فارغ من {model_name}")
-            return content, model_name
+            return content, model_name, None
         except Exception as e:
             logger.warning("Model %s failed: %s", model_name, e)
             last_error = e
             continue
-    raise last_error if last_error else RuntimeError("كل الموديلات طاحو")
+    return None, None, (last_error or RuntimeError("كل الموديلات طاحو"))
+
+
+def call_model_with_fallback(client: "openai.OpenAI", messages_content: list, has_image: bool) -> tuple[str, str]:
+    """يجرب لائحة الموديلات، وإلا طاحو كاملين يتسنى شوية ويعاود جولة كاملة ثانية
+    قبل ما يسلم - غالبية أعطاب الموديلات المجانية (429/جواب فارغ) عابرة."""
+    model_list = VISION_FALLBACK_MODELS if has_image else TEXT_FALLBACK_MODELS
+    content, used_model, error = _try_models_once(client, messages_content, model_list)
+    if content:
+        return content, used_model
+    logger.warning("كل الموديلات طاحو فالجولة الأولى، كنتسناو 3 ثواني ونعاودو...")
+    time.sleep(3)
+    content, used_model, error = _try_models_once(client, messages_content, model_list)
+    if content:
+        return content, used_model
+    raise error
 
 
 def extract_json(raw_text: str) -> dict:
