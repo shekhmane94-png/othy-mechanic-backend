@@ -156,8 +156,8 @@ def call_model_with_fallback(client: "openai.OpenAI", messages_content: list, ha
     content, used_model, error = _try_models_once(client, messages_content, model_list)
     if content:
         return content, used_model
-    logger.warning("كل الموديلات طاحو فالجولة الأولى، كنتسناو 3 ثواني ونعاودو...")
-    time.sleep(3)
+    logger.warning("كل الموديلات طاحو فالجولة الأولى، كنتسناو ثانية ونعاودو...")
+    time.sleep(1)
     content, used_model, error = _try_models_once(client, messages_content, model_list)
     if content:
         return content, used_model
@@ -203,6 +203,8 @@ async def diagnose_pro(
     client = openai.OpenAI(
         base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
         api_key=os.getenv("OPENAI_API_KEY"),
+        max_retries=0,  # كنتحكمو حنا فالمحاولات (بين الموديلات)، بلا تكرار داخلي بطيء
+        timeout=20.0,   # ماتخليش طلب واحد يبقى معلق بزاف ويسبب timeout فالفرونت إند
     )
 
     image_content = []
