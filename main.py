@@ -5,7 +5,9 @@ import time
 import base64
 import logging
 import datetime
+from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus
 
 import openai
 from fastapi import FastAPI, Depends, File, UploadFile, Form, HTTPException
@@ -96,9 +98,9 @@ app.add_middleware(
 # "openrouter/free" كيختار أحسن موديل مجاني متوفر. الباقي احتياط (الأسماء كتتبدل:
 # https://openrouter.ai/models?max_price=0)
 TEXT_FALLBACK_MODELS = [
-    "openrouter/free",
     "google/gemma-4-26b-a4b-it:free",
     "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "openrouter/free",
 ]
 VISION_FALLBACK_MODELS = [
     "google/gemma-4-31b-it:free",
@@ -213,7 +215,7 @@ def build_followup_prompt(
 """
 
 
-def _try_models_once(client, messages_content: list, model_list: list, deadline: float):
+def _try_models_once(client, messages_content: list, model_list: list, deadline: float, plain: list):
     """يجرب لائحة الموديلات مرة وحدة: (نتيجة, موديل, None) ولا (None, None, آخر_خطأ)."""
     last_error = None
     for model_name in model_list:
@@ -240,6 +242,11 @@ def _try_models_once(client, messages_content: list, model_list: list, deadline:
             content = response.choices[0].message.content
             if not content or not content.strip():
                 raise ValueError(f"محتوى فارغ من {model_name}")
+            if parse_report(content) is None:
+                # جواب ماشي تقرير: نحتفظو بيه كحل أخير إلا كان نص طويل، ونجربو موديل آخر
+                if len(content.strip()) >= 200 and not plain:
+                    plain.append((content, model_name))
+                raise ValueError(f"جواب غير منظم من {model_name}: {content.strip()[:80]!r}")
             return content, model_name, None
         except Exception as e:
             logger.warning("Model %s failed: %s", model_name, e)
@@ -252,23 +259,31 @@ def call_model_with_fallback(client, messages_content: list, has_image: bool):
     """يجرب الموديلات، وإلا طاحو كاملين كيعاود مرة وحدة، فحدود وقت إجمالي."""
     model_list = VISION_FALLBACK_MODELS if has_image else TEXT_FALLBACK_MODELS
     deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
+    plain: list = []
 
-    content, used_model, error = _try_models_once(client, messages_content, model_list, deadline)
+    content, used_model, error = _try_models_once(client, messages_content, model_list, deadline, plain)
     if content:
         return content, used_model
 
     if time.monotonic() < deadline:
         logger.warning("كل الموديلات طاحو فالجولة الأولى، كنعاودو...")
         time.sleep(1)
-        content, used_model, error = _try_models_once(client, messages_content, model_list, deadline)
+        content, used_model, error = _try_models_once(client, messages_content, model_list, deadline, plain)
         if content:
             return content, used_model
+
+    if plain:  # حل أخير: نص طويل ماشي JSON
+        return plain[0]
 
     raise error
 
 
-def extract_json(raw_text: str) -> dict:
-    """يقرا JSON من جواب الموديل، حتى لو كان محاط بنص زائد أو Markdown fences."""
+REPORT_KEYS = ("title", "summary", "causes", "checks", "repair", "advice")
+
+
+def parse_report(raw_text: str):
+    """يرجع dict إلا كان الجواب تقرير JSON حقيقي (فيه على الأقل مفتاحين من التقرير)، وإلا None.
+    هادشي كيمنع جوابات بحال "User Safety: safe" (موديلات تصنيف/حماية) من أنها تعدّ تشخيص."""
     candidates = [raw_text]
     match = re.search(r"\{.*\}", raw_text, re.DOTALL)
     if match:
@@ -276,11 +291,18 @@ def extract_json(raw_text: str) -> dict:
     for text in candidates:
         try:
             data = json.loads(text)
-            if isinstance(data, dict):
-                return data
         except (json.JSONDecodeError, TypeError):
             continue
-    # فشلنا: النص الخام كملخص باش ما يضيعش
+        if isinstance(data, dict) and sum(1 for k in REPORT_KEYS if data.get(k)) >= 2:
+            return data
+    return None
+
+
+def extract_json(raw_text: str) -> dict:
+    """يقرا تقرير JSON من جواب الموديل (حتى لو محاط بنص أو fences)، وإلا كيحفظ النص كملخص."""
+    data = parse_report(raw_text)
+    if data is not None:
+        return data
     return {
         "title": "تقرير غير منظم",
         "summary": raw_text.strip()[:1500],
@@ -372,6 +394,58 @@ def detected_codes_info(text: str) -> list:
     return result
 
 
+SEVERITY_AR = {"low": "منخفضة", "medium": "متوسطة", "high": "عالية"}
+
+
+def format_report_text(d: dict, codes: list) -> str:
+    """تقرير نصي مرتب فخانات: كيتعرض مزيان حتى فالواجهة القديمة (نص عادي)."""
+    out = []
+    if d.get("title"):
+        out.append(f"🔧 {d['title']}")
+    out.append(f"⚠️ الخطورة: {SEVERITY_AR.get(d.get('severity'), 'متوسطة')}")
+    if d.get("urgent"):
+        out.append(f"⛔ تحذير سلامة: {d.get('urgent_note') or 'هذا العطل قد يمس السلامة'}")
+    if d.get("summary"):
+        out.append(f"\n📌 الملخص\n{d['summary']}")
+    if codes:
+        out.append("\n🔎 الأكواد المقروءة")
+        for c in codes:
+            line = f"• {c.get('c', '')} — {c.get('ar', '')}"
+            if c.get("en"):
+                line += f" ({c['en']})"
+            out.append(line)
+    if d.get("causes"):
+        out.append("\n🎯 الأسباب المحتملة")
+        for i, c in enumerate(d["causes"], 1):
+            pct = f" ({c['percent']}%)" if c.get("percent") else ""
+            out.append(f"{i}. {c['cause']}{pct}")
+    for icon, title, key in (
+        ("🧪", "الفحوصات المقترحة", "checks"),
+        ("🛠️", "خطوات الإصلاح", "repair"),
+        ("🔩", "قطع الغيار للتحقق", "parts"),
+        ("➡️", "إلا ما تصلحش العطل", "next_steps"),
+    ):
+        items = d.get(key) or []
+        if items:
+            out.append(f"\n{icon} {title}")
+            for i, item in enumerate(items, 1):
+                out.append(f"{i}. {item}")
+    return "\n".join(out)
+
+
+def build_result(structured: bool, record_id, diagnosis: dict, codes: list, used_model, created_at) -> dict:
+    """الواجهة الجديدة كتطلب format=structured وكتاخد object. الواجهة القديمة كتاخد نص مرتب."""
+    return {
+        "status": "success",
+        "record_id": record_id,
+        "diagnosis": diagnosis if structured else format_report_text(diagnosis, codes),
+        "diagnosis_data": diagnosis,
+        "codes": codes,
+        "model_used": used_model,
+        "timestamp": created_at,
+    }
+
+
 def make_client():
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -425,6 +499,91 @@ def health():
     return {"status": "ok"}
 
 
+_REFERENCES_FILE = Path(__file__).with_name("references.json")
+_DEFAULT_REFERENCES = {
+    "sources": [
+        {"name": "شيما كهربائية (Google)", "kind": "diagram",
+         "url": "https://www.google.com/search?q={q}", "query": "{base} wiring diagram"},
+        {"name": "فيديو إصلاح (YouTube)", "kind": "video",
+         "url": "https://www.youtube.com/results?search_query={q}", "query": "{base} repair fix"},
+    ],
+    "curated": [],
+}
+
+
+def load_references() -> dict:
+    """يقرا references.json (المصادر + الروابط المؤكدة). إلا كان ناقص ولا خاطئ كيرجع للافتراضي."""
+    try:
+        with open(_REFERENCES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("sources"), list):
+            data.setdefault("curated", [])
+            return data
+    except Exception:
+        logger.warning("references.json غير متوفر أو خاطئ، كنستعملو الافتراضي")
+    return _DEFAULT_REFERENCES
+
+
+def build_references(brand: str, codes_text: str, topic: str) -> dict:
+    refs = load_references()
+    brand = (brand or "").strip()[:100]
+    topic = (topic or "").strip()[:100]
+    code_list = extract_codes(codes_text or "")[:5]
+
+    if code_list:
+        base = " ".join([brand] + code_list).strip()
+    else:
+        base = f"{brand} {topic}".strip()
+    if not base:
+        return {"links": [], "curated": []}
+
+    links = []
+    for source in refs.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        url_template = str(source.get("url", ""))
+        if not url_template.startswith(("http://", "https://")):
+            continue
+        if source.get("direct"):
+            final_url = url_template  # رابط مباشر للموقع (بلا بحث)
+        elif "{q}" in url_template:
+            query = str(source.get("query", "{base}")).replace("{base}", base)
+            final_url = url_template.replace("{q}", quote_plus(query))
+        else:
+            continue
+        links.append(
+            {
+                "name": str(source.get("name", "مرجع"))[:80],
+                "kind": str(source.get("kind", "other"))[:20],
+                "note": str(source.get("note", ""))[:120],
+                "url": final_url,
+            }
+        )
+
+    curated = []
+    for item in refs.get("curated", []):
+        if not isinstance(item, dict) or not item.get("verified") or not item.get("url"):
+            continue
+        match = item.get("match") if isinstance(item.get("match"), dict) else {}
+        codes_ok = not match.get("codes") or any(c in code_list for c in match["codes"])
+        brands = match.get("brand_contains")
+        brand_ok = not brands or any(str(b).lower() in brand.lower() for b in brands)
+        if codes_ok and brand_ok and str(item["url"]).startswith(("http://", "https://")):
+            curated.append(
+                {
+                    "title": str(item.get("title", ""))[:150],
+                    "url": str(item["url"]),
+                    "type": str(item.get("type", "other"))[:20],
+                }
+            )
+    return {"links": links, "curated": curated}
+
+
+@app.get("/api/v1/references")
+def references(brand: str = "", codes: str = "", topic: str = ""):
+    return build_references(brand, codes, topic)
+
+
 @app.get("/api/v1/vin/{vin}")
 def vin_endpoint(vin: str):
     try:
@@ -444,6 +603,7 @@ def diagnose_pro(
     gearbox_type: Optional[str] = Form(None),
     issue_description: Optional[str] = Form(None),
     language: str = Form("ar"),
+    output_format: Optional[str] = Form(None, alias="format"),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
 ):
@@ -492,14 +652,14 @@ def diagnose_pro(
         ai_diagnosis=raw_result,
     )
 
-    return {
-        "status": "success",
-        "record_id": record_id,
-        "diagnosis": diagnosis,
-        "codes": detected_codes_info(issue_description or ""),
-        "model_used": used_model,
-        "timestamp": created_at,
-    }
+    return build_result(
+        output_format == "structured",
+        record_id,
+        diagnosis,
+        detected_codes_info(issue_description or ""),
+        used_model,
+        created_at,
+    )
 
 
 class FollowupRequest(BaseModel):
@@ -510,6 +670,7 @@ class FollowupRequest(BaseModel):
     original_issue: Optional[str] = None
     previous_report: Optional[dict] = None
     earlier_findings: Optional[list] = None
+    format: Optional[str] = None
     findings: str
 
 
@@ -580,11 +741,11 @@ def diagnose_followup(payload: FollowupRequest, db: Session = Depends(get_db)):
         ai_diagnosis=raw_result,
     )
 
-    return {
-        "status": "success",
-        "record_id": record_id,
-        "diagnosis": diagnosis,
-        "codes": detected_codes_info(f"{original_issue}\n{findings}"),
-        "model_used": used_model,
-        "timestamp": created_at,
-    }
+    return build_result(
+        payload.format == "structured",
+        record_id,
+        diagnosis,
+        detected_codes_info(f"{original_issue}\n{findings}"),
+        used_model,
+        created_at,
+    )
